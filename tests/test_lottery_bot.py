@@ -176,3 +176,52 @@ def test_cli_import_audit_and_budget(tmp_path, capsys):
     assert main(base + ["buy", "megamillions"]) == 0
     assert main(base + ["buy", "scratch", "--cost", "11"]) == 1  # $10 left: refused
     assert "Refused" in capsys.readouterr().err
+
+
+# ---------------- statistical strategies ---------------- #
+
+from lottery_bot.strategies import History, backtest, expected_three_plus, stat_pick
+
+
+def _hist(n=300, seed=8):
+    w, s = simulate(POWERBALL, n, random.Random(seed))
+    return _draws(w, s)
+
+
+def test_balanced_picks_match_historical_shape():
+    h = History.from_draws(POWERBALL, _hist())
+    lo, hi = h.sum_band()
+    for _ in range(50):
+        p = stat_pick(h, "balanced", random.Random())
+        assert lo <= sum(p.whites) <= hi and h.shape_ok(p.whites)
+        assert not popularity_flags(p.whites, h.past)
+        assert 1 <= p.special <= POWERBALL.special_max
+
+
+def test_hot_strategy_favours_frequent_numbers():
+    draws = _hist(200)
+    # make 7 very "hot" in the recent window
+    draws = [data.Draw(d.draw_date, tuple(sorted({7, *d.whites[1:]})) if 7 not in d.whites else d.whites, d.special)
+             for d in draws]
+    h = History.from_draws(POWERBALL, draws, window=100)
+    rng = random.Random(9)
+    hot = sum(7 in stat_pick(h, "hot", rng).whites for _ in range(400))
+    cold = sum(7 in stat_pick(h, "cold", rng).whites for _ in range(400))
+    assert hot > cold
+
+
+def test_backtest_uses_only_past_data_and_reports_chance_levels():
+    draws = _hist(200)
+    r = backtest(draws, POWERBALL, picks_per_draw=3, warmup=50)
+    assert r.draws_tested == 150
+    assert {row.strategy for row in r.rows} == {"balanced", "hot", "cold", "random"}
+    assert abs(r.expected_white_matches - 25 / 69) < 1e-9
+    for row in r.rows:  # on fair draws every strategy should sit near chance
+        assert abs(row.avg_white_matches - r.expected_white_matches) < 0.08
+
+
+def test_three_plus_probability():
+    # P(match >=3 of 5 from 69) = (C(5,3)C(64,2)+C(5,4)C(64,1)+1)/C(69,5)
+    from math import comb
+    exp = (comb(5, 3) * comb(64, 2) + comb(5, 4) * 64 + 1) / comb(69, 5)
+    assert abs(expected_three_plus(POWERBALL) - exp) < 1e-15

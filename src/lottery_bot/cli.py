@@ -3,8 +3,9 @@
   lottery-bot fetch                     download official draw history (data.ny.gov)
   lottery-bot import FILE --game G      use a CSV/JSON you downloaded yourself
   lottery-bot audit [--sims N]          randomness audit -> reports/<game>-audit.md
-  lottery-bot picks [--game G] [-n N]   secure random picks that avoid popular patterns
-  lottery-bot payday                    the default plan for this payday + budget left
+  lottery-bot picks [--strategy S]      picks built from the draw history (balanced/hot/cold/random)
+  lottery-bot payday [--strategy S]     this payday's picks + budget left
+  lottery-bot backtest                  replay history: did any strategy beat pure chance?
   lottery-bot buy GAME [--cost X]       record a ticket (refused if over budget)
   lottery-bot win AMOUNT [--game G]     record a prize
   lottery-bot cashout AMOUNT            move winnings out of the ticket pool
@@ -23,13 +24,28 @@ from .audit import run_audit, to_markdown
 from .games import GAMES
 from .ledger import BudgetRefused, Ledger, cents, describe, money
 from .picks import generate
+from .strategies import DEFAULT_WINDOW, STRATEGIES, History, backtest, backtest_markdown, stat_pick
 
 
-def _past(game, data_dir: Path) -> set:
+def _picks(game, data_dir: Path, strategy: str, n: int, window: int, show_profile: bool) -> None:
     try:
-        return {d.whites for d in data.load(game, data_dir)}
+        h = History.from_draws(game, data.load(game, data_dir), window)
     except data.DataError:
-        return set()
+        print(f"{game.name}: no history yet (run: lottery-bot fetch); using plain random picks")
+        for p in generate(game, n):
+            print(f"  {p}")
+        return
+    print(f"{game.name} - strategy: {strategy} (odds stay 1 in {game.jackpot_odds:,})")
+    if show_profile:
+        for line in h.describe():
+            print(f"  {line}")
+    seen = set()
+    while len(seen) < n:
+        p = stat_pick(h, strategy)
+        if p.whites in seen:
+            continue
+        seen.add(p.whites)
+        print(f"  {p}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -51,8 +67,18 @@ def main(argv: list[str] | None = None) -> int:
     pk = sub.add_parser("picks")
     pk.add_argument("--game", choices=GAMES)
     pk.add_argument("-n", type=int, default=1)
-    pk.add_argument("--allow-popular", action="store_true")
-    sub.add_parser("payday")
+    pk.add_argument("--strategy", choices=STRATEGIES, default="balanced")
+    pk.add_argument("--window", type=int, default=DEFAULT_WINDOW, help="recent draws for hot/cold")
+    pk.add_argument("--show-profile", action="store_true", help="print the historical shape used")
+    pd = sub.add_parser("payday")
+    pd.add_argument("--strategy", choices=STRATEGIES, default="balanced")
+    pd.add_argument("--window", type=int, default=DEFAULT_WINDOW)
+    bt = sub.add_parser("backtest")
+    bt.add_argument("--game", choices=GAMES)
+    bt.add_argument("--picks-per-draw", type=int, default=10)
+    bt.add_argument("--window", type=int, default=DEFAULT_WINDOW)
+    bt.add_argument("--seed", type=int, default=7)
+    bt.add_argument("--out", type=Path, default=Path("reports"))
     by = sub.add_parser("buy")
     by.add_argument("game", help="powerball, megamillions, scratch, ...")
     by.add_argument("--cost", help="price in dollars (required for scratch cards)")
@@ -89,16 +115,22 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{g.name}: {report.verdict}\n  full report: {path}")
         elif a.cmd == "picks":
             for g in games:
-                print(f"{g.name} (odds stay 1 in {g.jackpot_odds:,}):")
-                for p in generate(g, a.n, avoid_popular=not a.allow_popular, past=_past(g, a.data_dir)):
-                    print(f"  {p}")
+                _picks(g, a.data_dir, a.strategy, a.n, a.window, a.show_profile)
+        elif a.cmd == "backtest":
+            a.out.mkdir(parents=True, exist_ok=True)
+            for g in games:
+                print(f"{g.name}: replaying history, this can take a minute...")
+                r = backtest(data.load(g, a.data_dir), g, a.picks_per_draw, window=a.window, seed=a.seed)
+                path = a.out / f"{g.key}-backtest.md"
+                text = backtest_markdown(r)
+                path.write_text(text)
+                print(text)
         else:
             ledger = Ledger(a.ledger)
             if a.cmd == "payday":
                 print("This payday's plan: 1 Mega Millions ($5) + 1 Powerball ($2) + scratch card (up to $8)\n")
-                for g in GAMES.values():
-                    p = generate(g, 1, past=_past(g, a.data_dir))[0]
-                    print(f"  {g.name}: {p}")
+                for g in (GAMES["megamillions"], GAMES["powerball"]):
+                    _picks(g, a.data_dir, a.strategy, 1, a.window, False)
                 print()
                 print(describe(ledger.status(today), ledger.config["budget_per_period_cents"]))
             elif a.cmd == "buy":

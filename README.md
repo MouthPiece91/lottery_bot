@@ -22,7 +22,16 @@ What it does instead:
    people play (all birthdays, sequences, evenly spaced patterns, slip rows, past
    winners). This does not change your odds of winning. It lowers the chance of
    sharing a jackpot if you do win.
-3. **Budget ledger with hard limits.** $15 of your own money per payday
+3. **Statistical picks from the draw history.** Four strategies:
+   - `balanced`: only combinations shaped like typical past draws (total in the
+     middle 80% of past sums, the usual odd/even and low/high splits)
+   - `hot`: numbers drawn more often recently get a bigger chance
+   - `cold`: numbers drawn less often recently get a bigger chance
+   - `random`: plain random, the baseline
+   `lottery-bot backtest` replays every past draw, picking each one using only the
+   draws before it, and compares every strategy with pure chance. Every
+   combination has the same odds in a fair draw; the backtest lets the data show it.
+4. **Budget ledger with hard limits.** $15 of your own money per payday
    (1st-15th and 16th-end of month), unused money never carries over, and extra
    tickets can only be paid from winnings. Anything over budget is refused.
 
@@ -41,7 +50,10 @@ pytest -q
 ```bash
 lottery-bot fetch            # official history from New York State Open Data
 lottery-bot audit            # writes reports/powerball-audit.md and reports/megamillions-audit.md
-lottery-bot payday           # this payday's picks + budget left
+lottery-bot payday           # this payday's picks (balanced) + budget left
+lottery-bot payday --strategy hot
+lottery-bot picks --strategy cold -n 3 --show-profile
+lottery-bot backtest         # writes reports/<game>-backtest.md
 
 lottery-bot buy megamillions
 lottery-bot buy powerball
